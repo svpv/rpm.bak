@@ -1178,6 +1178,18 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 			continue;
 		}
 		se = fe;
+		/* beware: options evaporate silently */
+		if (*f == '-' && mb->depth == 1) {
+			/* show how the whole token is parsed */
+			const char *te = se;
+			while (*te && !risspace(*te))
+				te++;
+			rpmlog(RPMLOG_WARNING,
+				_("%%%.*s parsed as %%{%.*s}%.*s\n"),
+				(int)(te - s), s,
+				(int)(se - s), s,
+				(int)(te - se), se);
+		}
 		/* For "%name " macros ... */
 		if ((c = *fe) && isblank(c))
 			if ((lastc = strchr(fe,'\n')) == NULL)
@@ -1338,8 +1350,8 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 	mep = findEntry(mb->mc, f, fn);
 	me = (mep ? *mep : NULL);
 
-	/* XXX Special processing for flags */
-	if (*f == '-') {
+	/* Special processing for getopt flags and macro existence */
+	if (*f == '-' || chkexist) {
 		if (me)
 			me->used++;	/* Mark macro as used */
 		if ((me == NULL && !negate) ||	/* Without -f, skip %{-f...} */
@@ -1358,23 +1370,6 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 		continue;
 	}
 
-	/* XXX Special processing for macro existence */
-	if (chkexist) {
-		if ((me == NULL && !negate) ||	/* Without -f, skip %{?f...} */
-		    (me != NULL && negate)) {	/* With -f, skip %{!?f...} */
-			s = se;
-			continue;
-		}
-		if (g && g < ge) {		/* Expand X in %{?f:X} */
-			rc = expandMacro(mb, g, gn);
-		} else
-		if (me && me->body && *me->body) { /* Expand %{?f}/%{?f*} */
-			rc = expandMacro(mb, me->body, 0);
-		}
-		s = se;
-		continue;
-	}
-	
 	if (me == NULL) {	/* leave unknown %... as is */
 		/* XXX hack to permit non-overloaded %foo to be passed */
 		c = '%';	/* XXX only need to save % */
