@@ -201,6 +201,9 @@ rpmSpec newSpec(void)
     spec->flags = RPMSPEC_NONE;
 
     spec->macros = rpmGlobalMacroContext;
+
+    spec->parsePart = PART_NONE;
+    spec->errors = 0;
     
 #ifdef WITH_LUA
     {

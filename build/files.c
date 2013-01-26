@@ -1657,6 +1657,62 @@ exit:
     return rc;
 }
 
+/* Check if str looks like attr */
+static int eqAttr(const char *s, const char *a)
+{
+    size_t len = strlen(a);
+    if (rstreqn(s, a, len)) {
+	int c = s[len];
+	if (!(risalnum(c) || c == '_'))
+	    return 1;
+    }
+    return 0;
+}
+
+int isFileAttr(const char *s)
+{
+    /* parseForVerify */
+    if (eqAttr(s, "%verify") ||
+	eqAttr(s, "%defverify"))
+	    return 1;
+    /* parseForAttr */
+    if (eqAttr(s, "%attr") ||
+	eqAttr(s, "%defattr"))
+	    return 1;
+    /* parseForDev */
+    if (eqAttr(s, "%dev"))
+	    return 1;
+    /* parseForConfig */
+    if (eqAttr(s, "%config"))
+	    return 1;
+    /* parseForLang */
+    if (eqAttr(s, "%lang"))
+	    return 1;
+    /* parseForCaps */
+    if (eqAttr(s, "%caps"))
+	    return 1;
+    /* parseForSimple */
+    for (VFA_t *vfa = virtualAttrs; vfa->attribute != NULL; vfa++)
+	if (eqAttr(s, vfa->attribute))
+	    return 1;
+    return 0;
+}
+
+/* Handle undefined macros */
+static void undefined(const char *fileName, int lineNum,
+	const char *s, const char *f, const char *fe,
+	const char *exp, int level, void *arg)
+{
+    if (s + 1 == f && isFileAttr(s))
+	return;
+    rpmlog(RPMLOG_WARNING,
+	    _("%s:%d: Undefined macro %%%.*s\n"),
+	    fileName, lineNum, (int)(fe - f), f);
+    (void) exp;
+    (void) level;
+    (void) arg;
+}
+
 static rpmRC readFilesManifest(rpmSpec spec, Package pkg, const char *path)
 {
     char *fn, buf[BUFSIZ];
@@ -1676,13 +1732,15 @@ static rpmRC readFilesManifest(rpmSpec spec, Package pkg, const char *path)
 	goto exit;
     }
 
+    int lineNum = 0;
     while (fgets(buf, sizeof(buf), fd)) {
 	handleComments(buf);
-	if (expandMacros(spec, spec->macros, buf, sizeof(buf))) {
-	    rpmlog(RPMLOG_ERR, _("line: %s\n"), buf);
+	char *exp = rpmExpandMacros(spec->macros, buf,
+			basename(fn), ++lineNum, undefined, NULL);
+	if (exp == NULL)
 	    goto exit;
-	}
-	argvAdd(&(pkg->fileList), buf);
+	argvAdd(&(pkg->fileList), exp);
+	free(exp);
     }
 
     if (ferror(fd))

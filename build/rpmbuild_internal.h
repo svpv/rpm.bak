@@ -80,6 +80,9 @@ struct rpmSpec_s {
     StringBuf parsed;		/*!< parsed spec contents */
 
     Package packages;		/*!< Package list. */
+
+    int parsePart;		/*!< current part */
+    int errors;			/*!< pending errors */
 };
 
 /** \ingroup rpmbuild
@@ -187,6 +190,14 @@ int readLine(rpmSpec spec, int strip);
  */
 RPM_GNUC_INTERNAL
 int isPart(const char * line)	;
+
+/** \ingroup rpmbuild
+ * Check for a valid file attribute (in %files section).
+ * @param s		string to check
+ * @return		1 if file attr, 0 if not
+ */
+RPM_GNUC_INTERNAL
+int isFileAttr(const char *s);
 
 /** \ingroup rpmbuild
  * Parse %%build/%%install/%%clean section(s) of a spec file.

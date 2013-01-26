@@ -52,18 +52,26 @@ void	rpmDumpMacroTable	(rpmMacroContext mc,
 					FILE * fp);
 
 /** \ingroup rpmmacro
- * Expand macro into buffer.
- * @deprecated Use rpmExpand().
- * @todo Eliminate from API.
- * @param spec		cookie (unused)
+ * Expand macros (on behalf of user input)
  * @param mc		macro context (NULL uses global context).
- * @retval sbuf		input macro to expand, output expansion
- * @param slen		size of buffer
- * @return		0 on success
+ * @param src		user input to expand
+ * @param fileName	input comes from
+ * @param lineNum	input line number
+ * @param undefined	handler for undefined macros (NULL == warn)
+ * @param s		macro invocation, starting with '%'
+ * @param f		macro name start
+ * @param fe		macro name end
+ * @param exp		already expanded part
+ * @param level		macro recursion level
+ * @param arg		callback argument
+ * @return		macro expansion (malloc'ed), NULL on error
  */
-int	expandMacros	(void * spec, rpmMacroContext mc,
-				char * sbuf,
-				size_t slen);
+char * rpmExpandMacros	(rpmMacroContext mc, const char *src,
+				const char *fileName, int lineNum,
+				void undefined(const char *fileName, int lineNum,
+					const char *s, const char *f, const char *fe,
+					const char *exp, int level, void *arg),
+				void *arg);
 
 /** \ingroup rpmmacro
  * Add macro to context.

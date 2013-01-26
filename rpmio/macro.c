@@ -69,6 +69,12 @@ typedef struct MacroBuf_s {
     int macro_trace;		/*!< Pre-print macro to expand? */
     int expand_trace;		/*!< Post-print macro expansion? */
     rpmMacroContext mc;
+    const char *fileName;
+    int lineNum;
+    void (*undefined)(const char *fileName, int lineNum,
+	    const char *s, const char *f, const char *fe,
+	    const char *exp, int level, void *arg);
+    void *arg;
 } * MacroBuf;
 
 #define	_MAX_MACRO_DEPTH	16
@@ -1370,10 +1376,19 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 		continue;
 	}
 
+	/* Handle user-level undefined macros */
+	if (me == NULL && (risalpha(*f) || *f == '_')) {
+		if (mb->undefined)
+			mb->undefined(mb->fileName, mb->lineNum,
+				s - 1, f, fe, mb->buf, mb->depth, mb->arg);
+		else if (mb->fileName)
+			rpmlog(RPMLOG_WARNING,
+				_("%s:%d: Undefined macro %%%.*s\n"),
+				mb->fileName, mb->lineNum, (int)(fe - f), f);
+	}
+
 	if (me == NULL) {	/* leave unknown %... as is */
-		/* XXX hack to permit non-overloaded %foo to be passed */
-		c = '%';	/* XXX only need to save % */
-		mbAppend(mb, c);
+		mbAppend(mb, '%');
 		continue;
 	}
 
@@ -1414,36 +1429,32 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 
 /* =============================================================== */
 
-static int doExpandMacros(rpmMacroContext mc, const char *src, char **target)
+char *rpmExpandMacros(rpmMacroContext mc, const char *src,
+	const char *fileName, int lineNum,
+	void undefined(const char *fileName, int lineNum,
+		const char *s, const char *f, const char *fe,
+		const char *exp, int level, void *arg),
+	void *arg)
 {
-    MacroBuf mb = xcalloc(1, sizeof(*mb));
-    int rc = 0;
+    struct MacroBuf_s mb = { 0 };
 
-    if (mc == NULL) mc = rpmGlobalMacroContext;
+    mb.macro_trace = print_macro_trace;
+    mb.expand_trace = print_expand_trace;
+    mb.mc = mc ? mc : rpmGlobalMacroContext;
 
-    mb->buf = NULL;
-    mb->depth = 0;
-    mb->macro_trace = print_macro_trace;
-    mb->expand_trace = print_expand_trace;
-    mb->mc = mc;
+    mb.fileName = fileName;
+    mb.lineNum = lineNum;
+    mb.undefined = undefined;
+    mb.arg = arg;
 
-    rc = expandMacro(mb, src, 0);
+    int rc = expandMacro(&mb, src, 0);
 
-    mb->buf[mb->tpos] = '\0';	/* XXX just in case */
-    /* expanded output is usually much less than alloced buffer, downsize */
-    *target = xrealloc(mb->buf, mb->tpos + 1);
+    if (rc == 0)
+        /* expanded output is usually much less than alloced buffer, downsize */
+	return xrealloc(mb.buf, mb.tpos + 1);
 
-    _free(mb);
-    return rc;
-}
-
-int expandMacros(void * spec, rpmMacroContext mc, char * sbuf, size_t slen)
-{
-    char *target = NULL;
-    int rc = doExpandMacros(mc, sbuf, &target);
-    rstrlcpy(sbuf, target, slen);
-    free(target);
-    return rc;
+    free(mb.buf);
+    return NULL;
 }
 
 void
@@ -1632,7 +1643,7 @@ rpmExpand(const char *arg, ...)
 	pe = stpcpy(pe, s);
     va_end(ap);
 
-    (void) doExpandMacros(NULL, buf, &ret);
+    ret = rpmExpandMacros(NULL, buf, NULL, 0, NULL, NULL);
 
     free(buf);
 exit:

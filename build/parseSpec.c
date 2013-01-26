@@ -16,6 +16,7 @@
 #include "build/rpmbuild_internal.h"
 #include "build/rpmbuild_misc.h"
 #include "debug.h"
+#include <libgen.h>
 
 #define SKIPSPACE(s) { while (*(s) && risspace(*(s))) (s)++; }
 #define SKIPNONSPACE(s) { while (*(s) && !risspace(*(s))) (s)++; }
@@ -63,9 +64,12 @@ static const struct PartRec {
     {0, 0, 0}
 };
 
-int isPart(const char *line)
+static int isPartToken(const char *line, int wb)
 {
     const struct PartRec *p;
+
+    if (*line != '%')
+	return PART_NONE;
 
     for (p = partList; p->token != NULL; p++) {
 	char c;
@@ -74,9 +78,139 @@ int isPart(const char *line)
 	c = *(line + p->len);
 	if (c == '\0' || risspace(c))
 	    break;
+	if (wb && !(risalnum(c) || c == '_'))
+	    break;
     }
 
     return (p->token ? p->part : PART_NONE);
+}
+
+int isPart(const char *line)
+{
+    return isPartToken(line, 0);
+}
+
+/* Check for conditional/include directives */
+static int isCond(const char *s)
+{
+    if (ISMACROWITHARG(s, "%if") ||
+	ISMACROWITHARG(s, "%ifarch") ||
+	ISMACROWITHARG(s, "%ifnarch") ||
+	ISMACROWITHARG(s, "%ifos") ||
+	ISMACROWITHARG(s, "%ifnos"))
+	    return 1;
+    if (ISMACRO(s, "%else") ||
+	ISMACRO(s, "%endif") ||
+	ISMACRO(s, "%include"))
+	    return 1;
+    return 0;
+}
+
+/* Check for %prep specials */
+static int isPrep(const char *s)
+{
+    if (rstreqn(s, "%setup", sizeof("%setup") - 1) ||
+	rstreqn(s, "%patch", sizeof("%patch") - 1))
+	    return 1;
+    return 0;
+}
+
+/* Handle undefined macros */
+static void undefined(const char *fileName, int lineNum,
+	const char *s, const char *f, const char *fe,
+	const char *exp, int level, void *arg)
+{
+    rpmSpec spec = arg;
+    assert(spec);
+
+    /* effective part */
+    int part = spec->parsePart;
+
+    /* skip concatenated lines */
+    const char *e;
+    while ((e = strchr(exp, '\n')) != NULL) {
+	int p = isPart(exp);
+	if (p != PART_NONE)
+	    part = p;
+	exp = e + 1;
+    }
+
+    /* too much noise about comments */
+    e = exp;
+    SKIPSPACE(e);
+    if (*e == '#')
+	return;
+
+    /* whether s is a simple %token */
+    int token = (s + 1 == f);
+
+    /* token at line start */
+    if (token && *exp == '\0') {
+	/* next part */
+	if (isPart(s))
+	    return;
+	/* %prep special */
+	if (part == PART_PREP && isPrep(s))
+	    return;
+    }
+
+    /* conditional, possibly indented */
+    if (token && isCond(s)) {
+	e = exp;
+	SKIPSPACE(e);
+	if (*e == '\0')
+	    return;
+    }
+
+    /* treat the rest of %part line as preamble */
+    if (isPart(exp))
+	part = PART_PREAMBLE;
+
+    /* permit some tokens in some sections */
+    switch (part) {
+    case PART_CHANGELOG:
+	if (token && isPartToken(s, 1))
+	    return;
+	/* fallthrough */
+    case PART_PREP:
+    case PART_BUILD:
+    case PART_INSTALL:
+    case PART_CHECK:
+    case PART_CLEAN:
+    case PART_FILES:
+	if (token && isFileAttr(s))
+	    return;
+	break;
+    }
+
+    /* warning vs error */
+    int rc = 0;
+    switch (part) {
+    case PART_PREAMBLE:
+    case PART_PRE:
+    case PART_POST:
+    case PART_PREUN:
+    case PART_POSTUN:
+    case PART_PRETRANS:
+    case PART_POSTTRANS:
+    case PART_TRIGGERPREIN:
+    case PART_TRIGGERIN:
+    case PART_TRIGGERUN:
+    case PART_TRIGGERPOSTUN:
+	if (!(spec->flags & RPMSPEC_FORCE))
+	    rc = 1;
+	break;
+    }
+
+    /* XXX tolerate sloppy %global usage in preamble */
+    if (part == PART_PREAMBLE && level > 1)
+        rc = 0;
+
+    /* wages of sin */
+    rpmlog(rc ? RPMLOG_ERR : RPMLOG_WARNING,
+	    _("%s:%d: Undefined macro %%%.*s\n"),
+	    fileName, lineNum, (int)(fe - f), f);
+    spec->errors += rc;
 }
 
 /**
@@ -204,11 +338,21 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi)
 	spec->lbufOff = 0;
 
 	/* Don't expand macros (eg. %define) in false branch of %if clause */
-	if (spec->readStack->reading &&
-	    expandMacros(spec, spec->macros, spec->lbuf, spec->lbufSize)) {
-		rpmlog(RPMLOG_ERR, _("line %d: %s\n"),
-			spec->lineNum, spec->lbuf);
+	if (spec->readStack->reading) {
+	    char *exp = rpmExpandMacros(spec->macros, spec->lbuf,
+				basename(ofi->fileName), ofi->lineNum,
+				undefined, spec);
+	    if (exp == NULL)
 		return -1;
+	    size_t len = strlen(exp);
+	    if (len < spec->lbufSize) {
+		memcpy(spec->lbuf, exp, len + 1);
+		free(exp);
+	    } else {
+		free(spec->lbuf);
+		spec->lbuf = exp;
+		spec->lbufSize = len + 1;
+	    }
 	}
 	spec->nextline = spec->lbuf;
     }
@@ -556,12 +700,13 @@ static void addTargets(Package Pkgs)
 static rpmSpec parseSpec(const char *specFile, rpmSpecFlags flags,
 			 const char *buildRoot, int recursing)
 {
-    int parsePart = PART_PREAMBLE;
     int initialPackage = 1;
     rpmSpec spec;
     
     /* Set up a new Spec structure with no packages. */
     spec = newSpec();
+#define parsePart (spec->parsePart)
+    parsePart = PART_PREAMBLE;
 
     spec->specFile = rpmGetPath(specFile, NULL);
     pushOFI(spec, spec->specFile);
@@ -702,9 +847,12 @@ static rpmSpec parseSpec(const char *specFile, rpmSpecFlags flags,
 	if (!headerIsEntry(pkg->header, RPMTAG_DESCRIPTION)) {
 	    rpmlog(RPMLOG_ERR, _("Package has no %%description: %s\n"),
 		   headerGetString(pkg->header, RPMTAG_NAME));
-	    goto errxit;
+	    spec->errors++;
 	}
     }
+
+    if (spec->errors)
+	goto errxit;
 
     /* Add arch, os and platform, self-provides etc for each package */
     addTargets(spec->packages);

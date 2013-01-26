@@ -22,6 +22,7 @@
 #include "build/rpmbuild_misc.h"
 
 #include "debug.h"
+#include <libgen.h>
 
 typedef struct cpioSourceArchive_s {
     rpm_loff_t	cpioArchiveSize;
@@ -91,12 +92,14 @@ static rpmRC addFileToTag(rpmSpec spec, const char * file,
 	}
     }
 
+    int lineNum = 0;
     while (fgets(buf, sizeof(buf), f)) {
-	if (expandMacros(spec, spec->macros, buf, sizeof(buf))) {
-	    rpmlog(RPMLOG_ERR, _("%s: line: %s\n"), fn, buf);
+	char *exp = rpmExpandMacros(spec->macros, buf,
+			basename(fn), ++lineNum, NULL, NULL);
+	if (exp == NULL)
 	    goto exit;
-	}
-	appendStringBuf(sb, buf);
+	appendStringBuf(sb, exp);
+	free(exp);
     }
     headerPutString(h, tag, getStringBuf(sb));
     rc = RPMRC_OK;
