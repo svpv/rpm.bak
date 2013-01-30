@@ -369,28 +369,41 @@ expandThis(MacroBuf mb, const char * src, size_t slen, char **target)
     return rc;
 }
 
-static void mbAppend(MacroBuf mb, char c)
+static void mbGrow(MacroBuf mb, size_t n)
 {
-    if (mb->nb < 1) {
-	mb->buf = xrealloc(mb->buf, mb->tpos + MACROBUFSIZ + 1);
-	mb->nb += MACROBUFSIZ;
-    }
+    mb->buf = xrealloc(mb->buf, mb->tpos + MACROBUFSIZ + n + 1);
+    mb->nb += MACROBUFSIZ + n;
+}
+
+static inline void mbAppend(MacroBuf mb, char c)
+{
+    if (mb->nb < 1)
+	mbGrow(mb, 1);
     mb->buf[mb->tpos++] = c;
     mb->buf[mb->tpos] = '\0';
     mb->nb--;
 }
 
-static void mbAppendStr(MacroBuf mb, const char *str)
+static inline void mbAppendStr(MacroBuf mb, const char *str)
 {
     size_t len = strlen(str);
-    if (len > mb->nb) {
-	mb->buf = xrealloc(mb->buf, mb->tpos + mb->nb + MACROBUFSIZ + len + 1);
-	mb->nb += MACROBUFSIZ + len;
-    }
-    memcpy(mb->buf+mb->tpos, str, len + 1);
+    if (mb->nb < len)
+	mbGrow(mb, len);
+    memcpy(mb->buf + mb->tpos, str, len + 1);
     mb->tpos += len;
     mb->nb -= len;
 }
+
+static inline void mbAppendStrn(MacroBuf mb, const char *str, size_t len)
+{
+    if (mb->nb < len)
+	mbGrow(mb, len);
+    memcpy(mb->buf + mb->tpos, str, len);
+    mb->tpos += len;
+    mb->buf[mb->tpos] = '\0';
+    mb->nb -= len;
+}
+
 /**
  * Expand output of shell command into target buffer.
  * @param mb		macro expansion state
@@ -992,18 +1005,19 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
     char *source = NULL;
 
     /* Handle non-terminated substrings by creating a terminated copy */
-    if (!slen)
-	slen = strlen(src);
-    source = xmalloc(slen + 1);
-    strncpy(source, src, slen);
-    source[slen] = '\0';
-    s = source;
+    if (slen) {
+	source = xmalloc(slen + 1);
+	memcpy(source, src, slen);
+	source[slen] = '\0';
+	s = source;
+    }
 
     if (mb->buf == NULL) {
-	size_t blen = MACROBUFSIZ + strlen(s);
-	mb->buf = xcalloc(blen + 1, sizeof(*mb->buf));
-	mb->tpos = 0;
+	size_t blen = MACROBUFSIZ + slen ? slen : strlen(s);
+	mb->buf = xmalloc(blen + 1);
+	mb->buf[0] = '\0';
 	mb->nb = blen;
+	mb->tpos = 0;
     }
     tpos = mb->tpos; /* save expansion pointer for printExpand */
 
@@ -1016,23 +1030,38 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 	return 1;
     }
 
-    while (rc == 0 && (c = *s) != '\0') {
-	s++;
-	/* Copy text until next macro */
-	switch(c) {
-	case '%':
-		if (*s) {	/* Ensure not end-of-string. */
-		    if (*s != '%')
-			break;
-		    s++;	/* skip first % in %% */
-		}
-	default:
-		mbAppend(mb, c);
-		continue;
+    while (rc == 0 && *s != '\0') {
+	/* Scan for % */
+	se = strchr(s, '%');
+	/* End of input */
+	if (se == NULL) {
+	    mbAppendStr(mb, s);
+	    break;
+	}
+	/* Copy text and expand %% to % */
+	if (se[1] == '%') {
+	    size_t len = se - s + 1;
+	    mbAppendStrn(mb, s, len);
+	    s += len + 1;
+	    continue;
+	}
+	/* Copy text and handle the macro */
+	else {
+	    size_t len = se - s;
+	    switch (len) {
+	    case 0: /* optimize for e.g. %{buildroot}%{_libdir} */
 		break;
+	    case 1: /* optimize for e.g. %{name}-%{version} */
+		mbAppend(mb, *s);
+		break;
+	    default:
+		mbAppendStrn(mb, s, len);
+		break;
+	    }
+	    s += len + 1;
 	}
 
-	/* Expand next macro */
+	/* Expand the macro */
 	f = fe = NULL;
 	g = ge = NULL;
 	if (mb->depth > 1)	/* XXX full expansion for outermost level */
@@ -1284,7 +1313,7 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 	s = se;
     }
 
-    mb->buf[mb->tpos] = '\0';
+    assert(mb->buf[mb->tpos] == '\0');
     mb->depth--;
     if (rc != 0 || mb->expand_trace)
 	printExpansion(mb, mb->buf+tpos, mb->buf+mb->tpos);
