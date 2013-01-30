@@ -69,11 +69,11 @@ ARGint_t argiData(ARGI_const_t argi)
 
 int argvCount(ARGV_const_t argv)
 {
-    int argc = 0;
+    ARGV_const_t argv_start = argv;
     if (argv)
-    while (argv[argc] != NULL)
-	argc++;
-    return argc;
+    while (*argv != NULL)
+	argv++;
+    return argv - argv_start;
 }
 
 ARGV_t argvData(ARGV_t argv)
