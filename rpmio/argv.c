@@ -213,12 +213,60 @@ int argvSplit(ARGV_t * argvp, const char * str, const char * seps)
 
 char *argvJoin(ARGV_const_t argv, const char *sep)
 {
-    char *dest = NULL;
-    char * const *arg;
+    int argc = argvCount(argv);
+    if (argc < 1)
+	return NULL;
 
-    for (arg = argv; arg && *arg; arg++) {
-	rstrscat(&dest, *arg, *(arg+1) ? sep : "", NULL);
-    } 
+    /* calculate lengths */
+    size_t lenbuf[32], *lens = lenbuf;
+    if (argc > 32)
+	lens = xmalloc(argc * sizeof(*lens));
+    size_t argvlen = 0;
+    for (int i = 0; i < argc; i++) {
+	size_t len = strlen(argv[i]);
+	lens[i] = len;
+	argvlen += len;
+    }
+
+    /* alloate destination buffer */
+    size_t seplen = sep ? strlen(sep) : 0;
+    char *dest = xmalloc(argvlen + seplen * (argc - 1) + 1);
+
+    /* first element */
+    size_t len = lens[0];
+    char *p = memcpy(dest, argv[0], len);
+    p += len;
+
+    /* remaining elements, with separators */
+    switch (seplen) {
+    case 0:
+	for (int i = 1; i < argc; i++) {
+	    len = lens[i];
+	    memcpy(p, argv[i], len);
+	    p += len;
+	}
+	break;
+    case 1:
+	for (int i = 1; i < argc; i++) {
+	    *p++ = *sep;
+	    len = lens[i];
+	    memcpy(p, argv[i], len);
+	    p += len;
+	}
+	break;
+    default:
+	for (int i = 1; i < argc; i++) {
+	    memcpy(p, sep, seplen);
+	    p += seplen;
+	    len = lens[i];
+	    memcpy(p, argv[i], len);
+	    p += len;
+	}
+	break;
+    }
+
+    *p = '\0';
+    if (lens != lenbuf)
+	free(lens);
     return dest;
 }
-    
