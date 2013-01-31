@@ -290,36 +290,47 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi)
 {
     /* Expand next line from file into line buffer */
     if (!(spec->nextline && *spec->nextline)) {
-	int pc = 0, bc = 0, nc = 0;
 	const char *from = ofi->readPtr;
-	char ch = ' ';
-	while (from && *from && ch != '\n') {
-	    ch = spec->lbuf[spec->lbufOff] = *from;
-	    spec->lbufOff++; from++;
-
-	    if (spec->lbufOff >= spec->lbufSize) {
-		spec->lbufSize += BUFSIZ;
-		spec->lbuf = realloc(spec->lbuf, spec->lbufSize);
-	    }
+	const char *end = strchr(from, '\n');
+	size_t len;
+	if (end == NULL) {
+	    len = strlen(from);
+	    end = from + len;
 	}
+	else {
+	    end++; /* grab newline */
+	    len = end - from;
+	}
+	if (len + 1 > spec->lbufSize - spec->lbufOff) {
+	    spec->lbufSize += BUFSIZ + len + 1;
+	    spec->lbuf = xrealloc(spec->lbuf, spec->lbufSize);
+	}
+	memcpy(spec->lbuf + spec->lbufOff, from, len);
+	spec->lbufOff += len;
 	spec->lbuf[spec->lbufOff] = '\0';
-	ofi->readPtr = from;
+	ofi->readPtr = end;
 
 	/* Check if we need another line before expanding the buffer. */
-	for (const char *p = spec->lbuf; *p; p++) {
+	int pc = 0, bc = 0, nc = 0;
+	/* Also check if we need to expand macros */
+	int needExpand = 0;
+	for (const char *p = spec->lbuf, *set = "\\%";
+		(p = strpbrk(p, set)) != NULL; p++)
 	    switch (*p) {
 		case '\\':
 		    switch (*(p+1)) {
-			case '\n': p++, nc = 1; break;
+			case '\n': p++, nc = 1; set = "\\\n%{}()"; break;
 			case '\0': break;
+			case '%': needExpand = 1; break;
 			default: p++; break;
 		    }
 		    break;
 		case '\n': nc = 0; break;
 		case '%':
+		    needExpand = 1;
 		    switch (*(p+1)) {
-			case '{': p++, bc++; break;
-			case '(': p++, pc++; break;
+			case '{': p++, bc++; set = "\\\n%{}()"; break;
+			case '(': p++, pc++; set = "\\\n%{}()"; break;
 			case '%': p++; break;
 		    }
 		    break;
@@ -328,7 +339,6 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi)
 		case '(': if (pc > 0) pc++; break;
 		case ')': if (pc > 0) pc--; break;
 	    }
-	}
 	
 	/* If it doesn't, ask for one more line. */
 	if (pc || bc || nc ) {
@@ -338,7 +348,7 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi)
 	spec->lbufOff = 0;
 
 	/* Don't expand macros (eg. %define) in false branch of %if clause */
-	if (spec->readStack->reading) {
+	if (needExpand && spec->readStack->reading) {
 	    char *exp = rpmExpandMacros(spec->macros, spec->lbuf,
 				basename(ofi->fileName), ofi->lineNum,
 				undefined, spec);
@@ -359,22 +369,23 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi)
     return 0;
 }
 
+/* Logical chunking into lines after macro expansion */
 static void copyNextLineFinish(rpmSpec spec, int strip)
 {
-    char *last;
-    char ch;
+    /* This line is to be processed */
+    spec->line = spec->nextline;
 
-    /* Find next line in expanded line buffer */
-    spec->line = last = spec->nextline;
-    ch = ' ';
-    while (*spec->nextline && ch != '\n') {
-	ch = *spec->nextline++;
-	if (!risspace(ch))
-	    last = spec->nextline;
+    /* Next line is after newline character */
+    char *end = strchr(spec->line, '\n');
+    if (end == NULL) {
+	/* Last line */
+	size_t len = strlen(spec->line);
+	end = spec->line + len;
+	spec->nextline = end;
     }
-
-    /* Save 1st char of next line in order to terminate current line. */
-    if (*spec->nextline != '\0') {
+    else {
+	spec->nextline = end + 1;
+	/* Save 1st char of next line in order to terminate current line */
 	spec->nextpeekc = *spec->nextline;
 	*spec->nextline = '\0';
     }
@@ -382,8 +393,11 @@ static void copyNextLineFinish(rpmSpec spec, int strip)
     if (strip & STRIP_COMMENTS)
 	handleComments(spec->line);
     
-    if (strip & STRIP_TRAILINGSPACE)
-	*last = '\0';
+    if (strip & STRIP_TRAILINGSPACE) {
+	while (end > spec->line && risspace(end[-1]))
+	    end--;
+	*end = '\0';
+    }
 }
 
 static int readLineFromOFI(rpmSpec spec, OFI_t *ofi)
