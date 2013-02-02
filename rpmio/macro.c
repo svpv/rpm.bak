@@ -627,6 +627,9 @@ freeArgs(MacroBuf mb)
 	assert(me);
 	if (me->level < mb->depth)
 	    continue;
+	int c = *me->name;
+	if (!(c == '*' || c == '#' || c == '-' || risdigit(c)))
+	    continue;
 	if (strlen(me->name) == 1 && strchr("#*0", *me->name)) {
 	    if (*me->name == '*' && me->used > 0)
 		skiptest = 1; /* XXX skip test for %# %* %0 */
